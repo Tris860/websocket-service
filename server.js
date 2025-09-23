@@ -58,7 +58,7 @@ wss.on('connection', function connection(ws) {
 });
 
 server.listen(4000, '0.0.0.0', () => {
-  console.log('Server is listening on port 3000');
+  console.log('Server is listening on port 4000');
   // Start the periodic check to the PHP backend
   setInterval(checkPhpBackend, 60000); // Check every 60 seconds (1 minute)
 });
@@ -71,23 +71,30 @@ async function checkPhpBackend() {
   try {
     const response = await fetch(PHP_BACKEND_URL);
     if (!response.ok) {
+      // This will still throw an error for non-200 responses
       throw new Error(`HTTP error! status: ${response.status}`);
     }
-    const data = await response.json();
 
-    // Check if the PHP response indicates a message should be sent
+    // Instead of parsing as JSON, get the response as plain text first
+    const responseText = await response.text();
+    console.log('Full server response:', responseText);
+
+    // Now, try to parse the text as JSON
+    const data = JSON.parse(responseText);
+
+    // Your original logic continues here...
     if (data.success === true) {
       console.log('PHP backend triggered a message:', data.message);
-      // Broadcast the message to all connected WebSocket clients
       wss.clients.forEach(function each(client) {
         if (client.readyState === WebSocket.OPEN) {
           client.send("AUTO_ON");
         }
       });
     } else {
-      console.log('PHP backend did not return a message to broadcast.',data.success);
+      console.log('PHP backend did not return a message to broadcast.', data.success);
     }
   } catch (error) {
-    console.error('Failed to fetch from PHP backend:', error);
+    // This will now catch the JSON parsing error and give you the raw text
+    console.error('Failed to fetch or parse from PHP backend:', error);
   }
 }
