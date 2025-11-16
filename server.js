@@ -3,7 +3,7 @@ const http = require('http');
 const url = require('url');
 const WebSocket = require('ws');
 
-// Render automatically sets the PORT environment variable.
+// Render sets PORT automatically
 const PORT = process.env.PORT || 4000;
 
 // PHP backend endpoints
@@ -11,7 +11,7 @@ const WEMOS_AUTH_URL = 'https://tristechhub.org.rw/projects/ATS/backend/main.php
 const PHP_BACKEND_URL = 'https://tristechhub.org.rw/projects/ATS/backend/main.php?action=is_current_time_in_period';
 const USER_DEVICE_LOOKUP_URL = 'https://tristechhub.org.rw/projects/ATS/backend/main.php?action=get_user_device';
 
-// WebSocket server (manual upgrade mode)
+// WebSocket server
 const wss = new WebSocket.Server({ noServer: true });
 
 // Maps
@@ -19,7 +19,7 @@ const authenticatedWemos = new Map(); // deviceName -> WebSocket
 const userWebClients = new Map();     // userEmail -> Set(WebSocket)
 const userToWemosCache = new Map();   // userEmail -> deviceName
 
-// Utility: normalize headers
+// Normalize headers
 function headerFirst(request, name) {
   const v = request.headers[name.toLowerCase()];
   if (!v) return null;
@@ -27,7 +27,7 @@ function headerFirst(request, name) {
   return String(v).split(',')[0].trim();
 }
 
-// Lookup device for user (cached)
+// Cached device lookup
 async function getCachedWemosDeviceNameForUser(userEmail) {
   if (!userEmail) return null;
   if (userToWemosCache.has(userEmail)) return userToWemosCache.get(userEmail);
@@ -42,14 +42,11 @@ async function getCachedWemosDeviceNameForUser(userEmail) {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: postData.toString()
     });
-
     const raw = await resp.text();
-    console.log("RAW PHP RESPONSE:", raw);
-
+    console.log("RAW PHP RESPONSE (device lookup):", raw);
     let data;
     try { data = JSON.parse(raw); } catch (e) { return null; }
-
-    if (data.success === true && data.device_name) {
+    if (data.success && data.device_name) {
       userToWemosCache.set(userEmail, data.device_name);
       return data.device_name;
     }
@@ -60,17 +57,13 @@ async function getCachedWemosDeviceNameForUser(userEmail) {
   }
 }
 
-// Add/remove web clients
+// Web client management
 function addWebClientForUser(email, ws) {
   if (!email) return;
   let set = userWebClients.get(email);
-  if (!set) {
-    set = new Set();
-    userWebClients.set(email, set);
-  }
+  if (!set) { set = new Set(); userWebClients.set(email, set); }
   set.add(ws);
 }
-
 function removeWebClientForUser(email, ws) {
   if (!email) return;
   const set = userWebClients.get(email);
@@ -79,8 +72,8 @@ function removeWebClientForUser(email, ws) {
   if (set.size === 0) userWebClients.delete(email);
 }
 
-// Authenticate Wemos and upgrade socket
-async function authenticateAndUpgradeWemos(request, socket, head) {
+// Wemos Authentication & Upgrade (NO async/await)
+function authenticateAndUpgradeWemos(request, socket, head) {
   const usernameHeader = headerFirst(request, 'x-username');
   const passwordHeader = headerFirst(request, 'x-password');
   console.log(`Authenticating Wemos. username=${usernameHeader}`);
@@ -91,21 +84,19 @@ async function authenticateAndUpgradeWemos(request, socket, head) {
     return;
   }
 
-  try {
-    const postData = new URLSearchParams();
-    postData.append('action', 'wemos_auth');
-    postData.append('username', usernameHeader);
-    postData.append('password', passwordHeader);
+  const postData = new URLSearchParams();
+  postData.append('action', 'wemos_auth');
+  postData.append('username', usernameHeader);
+  postData.append('password', passwordHeader);
 
-    const resp = await fetch(WEMOS_AUTH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: postData.toString()
-    });
-
-    const raw = await resp.text();
+  fetch(WEMOS_AUTH_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: postData.toString()
+  })
+  .then(resp => resp.text())
+  .then(raw => {
     console.log("RAW PHP RESPONSE:", raw);
-
     let data;
     try { data = JSON.parse(raw); } catch (e) { data = null; }
 
@@ -119,23 +110,20 @@ async function authenticateAndUpgradeWemos(request, socket, head) {
     const deviceName = data.data?.device_name || usernameHeader;
     const initialCommand = data.data?.hard_switch_enabled ? 'HARD_ON' : 'HARD_OFF';
 
-    // Upgrade without emitting 'connection' here
     wss.handleUpgrade(request, socket, head, (ws) => {
       ws.isWemos = true;
       ws.wemosName = deviceName;
       ws.isAlive = true;
-      ws.initialCommand = initialCommand; // Pass to main handler
+      ws.initialCommand = initialCommand;
 
       console.log(`Wemos client '${deviceName}' authenticated and connected.`);
-
-      // DO NOT emit 'connection' here — main handler will do it
     });
-
-  } catch (err) {
+  })
+  .catch(err => {
     console.error(`Authentication error for Wemos '${usernameHeader}':`, err.message);
     try { socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n'); } catch (e) {}
     socket.destroy();
-  }
+  });
 }
 
 // HTTP server
@@ -144,8 +132,8 @@ const server = http.createServer((req, res) => {
   res.end('WebSocket server running\n');
 });
 
-// Upgrade handling
-server.on('upgrade', async (request, socket, head) => {
+// Upgrade handler
+server.on('upgrade', (request, socket, head) => {
   const parsed = url.parse(request.url, true);
   const webUserQuery = parsed.query.user || null;
 
@@ -153,11 +141,11 @@ server.on('upgrade', async (request, socket, head) => {
   const xPassword = headerFirst(request, 'x-password');
 
   if (xUsername && xPassword) {
-    await authenticateAndUpgradeWemos(request, socket, head);
+    authenticateAndUpgradeWemos(request, socket, head);  // NO AWAIT
     return;
   }
 
-  // Browser/web client
+  // Web client
   wss.handleUpgrade(request, socket, head, (ws) => {
     ws.isWemos = false;
     ws.webUsername = webUserQuery;
@@ -167,14 +155,12 @@ server.on('upgrade', async (request, socket, head) => {
   });
 });
 
-// SINGLE CONNECTION HANDLER — Wemos & Web Clients
+// SINGLE CONNECTION HANDLER
 wss.on('connection', (ws, request) => {
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
 
-  // ——————————————————————
-  // WEB CLIENT (Browser)
-  // ——————————————————————
+  // ——— WEB CLIENT ———
   if (!ws.isWemos) {
     const userEmail = ws.webUsername;
     if (userEmail) addWebClientForUser(userEmail, ws);
@@ -215,21 +201,14 @@ wss.on('connection', (ws, request) => {
       if (userEmail) {
         removeWebClientForUser(userEmail, ws);
         console.log(`Webpage client disconnected. user=${userEmail}`);
-      } else {
-        console.log('Webpage client disconnected. user=[unknown]');
       }
     });
 
-    ws.on('error', (err) => {
-      console.error('Web client error:', err.message);
-    });
-
+    ws.on('error', (err) => console.error('Web client error:', err.message));
     return;
   }
 
-  // ——————————————————————
-  // WEMOS CLIENT
-  // ——————————————————————
+  // ——— WEMOS CLIENT ———
   const deviceName = ws.wemosName;
   const initialCommand = ws.initialCommand;
 
@@ -242,7 +221,9 @@ wss.on('connection', (ws, request) => {
 
   // Send initial command
   if (ws.readyState === WebSocket.OPEN && initialCommand) {
-    try { ws.send(initialCommand); } catch (e) {}
+    setTimeout(() => {
+      try { ws.send(initialCommand); } catch (e) {}
+    }, 100);
   }
 
   ws.on('message', (msg) => {
@@ -262,9 +243,9 @@ wss.on('connection', (ws, request) => {
   });
 
   ws.on('close', () => {
-    const current = authenticatedWemos.get(deviceName);
-    if (current === ws) authenticatedWemos.delete(deviceName);
-
+    if (authenticatedWemos.get(deviceName) === ws) {
+      authenticatedWemos.delete(deviceName);
+    }
     console.log(`Wemos '${deviceName}' disconnected.`);
 
     userWebClients.forEach((set, email) => {
@@ -283,7 +264,7 @@ wss.on('connection', (ws, request) => {
   });
 });
 
-// Heartbeat: detect dead sockets
+// Heartbeat
 setInterval(() => {
   wss.clients.forEach((ws) => {
     if (ws.isAlive === false) {
@@ -297,11 +278,11 @@ setInterval(() => {
   });
 }, 30000);
 
-// Periodic PHP backend check and broadcast
+// PHP backend check
 async function checkPhpBackend() {
   try {
     const resp = await fetch(PHP_BACKEND_URL);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const raw = await resp.text();
     let data;
     try { data = JSON.parse(raw); } catch (e) { return; }
@@ -310,14 +291,12 @@ async function checkPhpBackend() {
       const messageToWemos = 'AUTO_ON';
       const messageToWeb = 'TIME_MATCHED: ' + data.message + ": " + data.id;
 
-      // Broadcast AUTO_ON to all connected Wemos
       authenticatedWemos.forEach((client, deviceName) => {
-        if (client && client.readyState === WebSocket.OPEN) {
+        if (client.readyState === WebSocket.OPEN) {
           try { client.send(messageToWemos); console.log(`Sent ${messageToWemos} to ${deviceName}`); } catch (e) {}
         }
       });
 
-      // Notify all web clients
       userWebClients.forEach((set) => {
         set.forEach(client => {
           if (client.readyState === WebSocket.OPEN) {
@@ -333,7 +312,7 @@ async function checkPhpBackend() {
 
 // Start server
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server listening on port ${PORT}. Render proxy handles WSS encryption.`);
+  console.log(`Server listening on port ${PORT}.`);
   checkPhpBackend();
   setInterval(checkPhpBackend, 60000);
 });
