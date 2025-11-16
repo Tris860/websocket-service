@@ -19,7 +19,7 @@ const authenticatedWemos = new Map(); // deviceName -> WebSocket
 const userWebClients = new Map();     // userEmail -> Set(WebSocket)
 const userToWemosCache = new Map();   // userEmail -> deviceName
 
-// Utility: normalize headers (avoid "wemos_user, wemos_user")
+// Utility: normalize headers
 function headerFirst(request, name) {
   const v = request.headers[name.toLowerCase()];
   if (!v) return null;
@@ -70,6 +70,7 @@ function addWebClientForUser(email, ws) {
   }
   set.add(ws);
 }
+
 function removeWebClientForUser(email, ws) {
   if (!email) return;
   const set = userWebClients.get(email);
@@ -118,43 +119,16 @@ async function authenticateAndUpgradeWemos(request, socket, head) {
     const deviceName = data.data?.device_name || usernameHeader;
     const initialCommand = data.data?.hard_switch_enabled ? 'HARD_ON' : 'HARD_OFF';
 
+    // Upgrade without emitting 'connection' here
     wss.handleUpgrade(request, socket, head, (ws) => {
       ws.isWemos = true;
       ws.wemosName = deviceName;
       ws.isAlive = true;
-
-      ws.on('pong', () => { ws.isAlive = true; });
-      ws.on('error', (err) => console.error(`WebSocket error for '${deviceName}':`, err.message));
-      ws.on('close', () => {
-        const current = authenticatedWemos.get(deviceName);
-        if (current === ws) authenticatedWemos.delete(deviceName);
-        console.log(`Wemos '${deviceName}' disconnected.`);
-        // Notify web clients
-        userWebClients.forEach((set, email) => {
-          if (userToWemosCache.get(email) === deviceName) {
-            set.forEach(client => {
-              if (client.readyState === WebSocket.OPEN) {
-                try { client.send('WEMOS_STATUS:DISCONNECTED'); } catch (e) {}
-              }
-            });
-          }
-        });
-      });
-
-      // Replace existing safely
-      const existing = authenticatedWemos.get(deviceName);
-      if (existing && existing !== ws && existing.readyState === WebSocket.OPEN) {
-        setTimeout(() => { try { existing.terminate(); } catch (e) {} }, 250);
-      }
-      authenticatedWemos.set(deviceName, ws);
+      ws.initialCommand = initialCommand; // Pass to main handler
 
       console.log(`Wemos client '${deviceName}' authenticated and connected.`);
 
-      if (ws.readyState === WebSocket.OPEN && initialCommand) {
-        try { ws.send(initialCommand); } catch (e) {}
-      }
-
-      wss.emit('connection', ws, request);
+      // DO NOT emit 'connection' here — main handler will do it
     });
 
   } catch (err) {
@@ -189,86 +163,123 @@ server.on('upgrade', async (request, socket, head) => {
     ws.webUsername = webUserQuery;
     ws.assignedWemosName = null;
     ws.isAlive = true;
-    ws.on('pong', () => { ws.isAlive = true; });
     console.log(`Webpage client connected. user=${ws.webUsername}`);
-    wss.emit('connection', ws, request);
   });
 });
 
-// Connection handling
+// SINGLE CONNECTION HANDLER — Wemos & Web Clients
 wss.on('connection', (ws, request) => {
   ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
 
-  ws.on('message', async (msg) => {
-    const text = msg.toString();
-    ws.isAlive = true; // mark alive on any message
+  // ——————————————————————
+  // WEB CLIENT (Browser)
+  // ——————————————————————
+  if (!ws.isWemos) {
+    const userEmail = ws.webUsername;
+    if (userEmail) addWebClientForUser(userEmail, ws);
 
-    if (!ws.isWemos) {
-      const userEmail = ws.webUsername;
-      if (!userEmail) { try { ws.send('MESSAGE_FAILED:NoUserIdentity'); } catch (e) {} return; }
+    ws.on('message', async (msg) => {
+      const text = msg.toString();
+      ws.isAlive = true;
+
+      if (!userEmail) {
+        try { ws.send('MESSAGE_FAILED:NoUserIdentity'); } catch (e) {}
+        return;
+      }
 
       let deviceName = ws.assignedWemosName;
       if (!deviceName) {
         deviceName = await getCachedWemosDeviceNameForUser(userEmail);
         ws.assignedWemosName = deviceName;
       }
-      if (!deviceName) { try { ws.send('MESSAGE_FAILED:NoDeviceAssigned'); } catch (e) {} return; }
+      if (!deviceName) {
+        try { ws.send('MESSAGE_FAILED:NoDeviceAssigned'); } catch (e) {}
+        return;
+      }
 
       const target = authenticatedWemos.get(deviceName);
       if (target && target.readyState === WebSocket.OPEN) {
-        try { target.send(text); ws.send('MESSAGE_DELIVERED'); } catch (e) { ws.send('MESSAGE_FAILED'); }
+        try {
+          target.send(text);
+          ws.send('MESSAGE_DELIVERED');
+        } catch (e) {
+          ws.send('MESSAGE_FAILED');
+        }
       } else {
         try { ws.send('WEMOS_STATUS:DISCONNECTED'); } catch (e) {}
       }
-    } else {
-            // …continuation inside wss.on('connection')
+    });
 
-      // Wemos -> server: forward to all webpage clients for mapped user(s)
-      const fromDevice = ws.wemosName;
-      console.log(`Message from Wemos '${fromDevice}': ${text}`);
-
-      userWebClients.forEach((set, email) => {
-        if (userToWemosCache.get(email) === fromDevice) {
-          set.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-              try { client.send(`WEMOS_MSG:${text}`); } catch (e) {}
-            }
-          });
-        }
-      });
-    }
-  });
-
-  ws.on('close', () => {
-    if (ws.isWemos && ws.wemosName) {
-      const name = ws.wemosName;
-      const current = authenticatedWemos.get(name);
-      if (current === ws) authenticatedWemos.delete(name);
-
-      console.log(`Wemos '${name}' disconnected.`);
-      // Notify pages mapping to this device
-      userWebClients.forEach((set, email) => {
-        if (userToWemosCache.get(email) === name) {
-          set.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-              try { client.send('WEMOS_STATUS:DISCONNECTED'); } catch (e) {}
-            }
-          });
-        }
-      });
-    } else {
-      const email = ws.webUsername;
-      if (email) {
-        removeWebClientForUser(email, ws);
-        console.log(`Webpage client disconnected. user=${email}`);
+    ws.on('close', () => {
+      if (userEmail) {
+        removeWebClientForUser(userEmail, ws);
+        console.log(`Webpage client disconnected. user=${userEmail}`);
       } else {
         console.log('Webpage client disconnected. user=[unknown]');
       }
-    }
+    });
+
+    ws.on('error', (err) => {
+      console.error('Web client error:', err.message);
+    });
+
+    return;
+  }
+
+  // ——————————————————————
+  // WEMOS CLIENT
+  // ——————————————————————
+  const deviceName = ws.wemosName;
+  const initialCommand = ws.initialCommand;
+
+  // Replace old connection
+  const existing = authenticatedWemos.get(deviceName);
+  if (existing && existing !== ws && existing.readyState === WebSocket.OPEN) {
+    setTimeout(() => { try { existing.terminate(); } catch (e) {} }, 250);
+  }
+  authenticatedWemos.set(deviceName, ws);
+
+  // Send initial command
+  if (ws.readyState === WebSocket.OPEN && initialCommand) {
+    try { ws.send(initialCommand); } catch (e) {}
+  }
+
+  ws.on('message', (msg) => {
+    const text = msg.toString();
+    ws.isAlive = true;
+    console.log(`Message from Wemos '${deviceName}': ${text}`);
+
+    userWebClients.forEach((set, email) => {
+      if (userToWemosCache.get(email) === deviceName) {
+        set.forEach(client => {
+          if (client.readyState === WebSocket.OPEN) {
+            try { client.send(`WEMOS_MSG:${text}`); } catch (e) {}
+          }
+        });
+      }
+    });
+  });
+
+  ws.on('close', () => {
+    const current = authenticatedWemos.get(deviceName);
+    if (current === ws) authenticatedWemos.delete(deviceName);
+
+    console.log(`Wemos '${deviceName}' disconnected.`);
+
+    userWebClients.forEach((set, email) => {
+      if (userToWemosCache.get(email) === deviceName) {
+        set.forEach(client => {
+          if (client.readyState === WebSocket.OPEN) {
+            try { client.send('WEMOS_STATUS:DISCONNECTED'); } catch (e) {}
+          }
+        });
+      }
+    });
   });
 
   ws.on('error', (err) => {
-    console.error('WebSocket error:', err.message);
+    console.error(`WebSocket error for '${deviceName}':`, err.message);
   });
 });
 
@@ -276,7 +287,8 @@ wss.on('connection', (ws, request) => {
 setInterval(() => {
   wss.clients.forEach((ws) => {
     if (ws.isAlive === false) {
-      console.log(`Terminating dead socket for '${ws.wemosName || ws.webUsername || 'unknown'}'`);
+      const id = ws.isWemos ? ws.wemosName : ws.webUsername || 'unknown';
+      console.log(`Terminating dead socket for '${id}'`);
       try { ws.terminate(); } catch (e) {}
       return;
     }
@@ -305,7 +317,7 @@ async function checkPhpBackend() {
         }
       });
 
-      // Notify webpages
+      // Notify all web clients
       userWebClients.forEach((set) => {
         set.forEach(client => {
           if (client.readyState === WebSocket.OPEN) {
