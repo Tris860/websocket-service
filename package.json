@@ -1,22 +1,27 @@
 {
-  "name": "websocket-server",
+  "name": "websocket-service",
   "version": "1.0.0",
-  "description": "A Node.js WebSocket server for time-based actions.",
+  "description": "",
   "main": "server.js",
   "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js"
   },
-  "keywords": [
-    "websocket",
-    "node.js",
-    "server",
-    "wemos",
-    "time-based"
-  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tris860/websocket-service.git"
+  },
+  "keywords": [],
   "author": "",
   "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Tris860/websocket-service/issues"
+  },
+  "homepage": "https://github.com/Tris860/websocket-service#readme",
   "dependencies": {
-    "node-fetch": "^2.6.1",
-    "ws": "^8.0.0"
-  }
+    "node-fetch": "^3.3.2",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {}
 }
