@@ -45,7 +45,10 @@ async function getCachedWemosDeviceNameForUser(userEmail) {
     const ct = resp.headers.get('content-type') || '';
     if (!ct.includes('application/json')) throw new Error('Expected application/json');
 
-    const data = await resp.json();
+//     const data = await resp.json();
+    const raw = await resp.text();
+    console.log("RAW PHP RESPONSE:", raw);
+    const data = JSON.parse(raw);
     if (data.success === true && data.device_name) {
       userToWemosCache.set(userEmail, data.device_name);
       return data.device_name;
