@@ -4,7 +4,7 @@ const os = require('os');
 const url = require('url');
 
 const WebSocket = require('ws');
-const fetch = require('node-fetch');
+
 
 // Render automatically sets the PORT environment variable.
 const PORT = process.env.PORT || 4000; 
