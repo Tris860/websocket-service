@@ -79,7 +79,7 @@ function authenticateAndUpgradeWemos(request, socket, head) {
   console.log(`Authenticating Wemos. username=${usernameHeader}`);
 
   if (!usernameHeader || !passwordHeader) {
-    try { socket.write('HTTP/1.1 400 Bad Request\r\n\r\n'); } catch (e) {}
+    socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
     socket.destroy();
     return;
   }
@@ -101,7 +101,7 @@ function authenticateAndUpgradeWemos(request, socket, head) {
     try { data = JSON.parse(raw); } catch (e) { data = null; }
 
     if (!data || data.success !== true) {
-      try { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); } catch (e) {}
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       console.log("Authentication failed for Wemos");
       socket.destroy();
       return;
@@ -110,20 +110,22 @@ function authenticateAndUpgradeWemos(request, socket, head) {
     const deviceName = data.data?.device_name || usernameHeader;
     const initialCommand = data.data?.hard_switch_enabled ? 'HARD_ON' : 'HARD_OFF';
 
+    // UPGRADE NOW — socket still alive
     wss.handleUpgrade(request, socket, head, (ws) => {
       ws.isWemos = true;
       ws.wemosName = deviceName;
       ws.isAlive = true;
       ws.initialCommand = initialCommand;
-
       console.log(`Wemos client '${deviceName}' authenticated and connected.`);
     });
   })
   .catch(err => {
-    console.error(`Authentication error for Wemos '${usernameHeader}':`, err.message);
-    try { socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n'); } catch (e) {}
+    console.error(`Auth error:`, err.message);
+    socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
     socket.destroy();
   });
+
+  // DO NOT return or destroy here
 }
 
 // HTTP server
@@ -141,18 +143,17 @@ server.on('upgrade', (request, socket, head) => {
   const xPassword = headerFirst(request, 'x-password');
 
   if (xUsername && xPassword) {
-    authenticateAndUpgradeWemos(request, socket, head);  // NO AWAIT
-    return;
+    authenticateAndUpgradeWemos(request, socket, head);
+    // ← DO NOT return here
+  } else {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      ws.isWemos = false;
+      ws.webUsername = webUserQuery;
+      ws.assignedWemosName = null;
+      ws.isAlive = true;
+      console.log(`Webpage client connected. user=${ws.webUsername}`);
+    });
   }
-
-  // Web client
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    ws.isWemos = false;
-    ws.webUsername = webUserQuery;
-    ws.assignedWemosName = null;
-    ws.isAlive = true;
-    console.log(`Webpage client connected. user=${ws.webUsername}`);
-  });
 });
 
 // SINGLE CONNECTION HANDLER
