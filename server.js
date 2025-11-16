@@ -4,15 +4,15 @@ const os = require('os');
 const url = require('url');
 
 const WebSocket = require('ws');
-const fetch = require('node-fetch');
+// const fetch = require('node-fetch');
 
 // Render automatically sets the PORT environment variable.
 const PORT = process.env.PORT || 4000; 
 
 // The PHP backend URLs are already correctly pointing to the public domain:
-const WEMOS_AUTH_URL = 'https://tristechhub.org.rw/projects/ATS/main.php?action=wemos_auth';
-const PHP_BACKEND_URL = 'https://tristechhub.org.rw/projects/ATS/main.php?action=is_current_time_in_period';
-const USER_DEVICE_LOOKUP_URL = 'https://tristechhub.org.rw/projects/ATS/main.php?action=get_user_device';
+const WEMOS_AUTH_URL = 'https://tristechhub.org.rw/projects/ATS/backend/main.php?action=wemos_auth';
+const PHP_BACKEND_URL = 'https://tristechhub.org.rw/projects/ATS/backend/main.php?action=is_current_time_in_period';
+const USER_DEVICE_LOOKUP_URL = 'https://tristechhub.org.rw/projects/ATS/backend/main.php?action=get_user_device';
 
 const wss = new WebSocket.Server({ noServer: true });
 
