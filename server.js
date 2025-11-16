@@ -131,7 +131,9 @@ async function authenticateAndUpgradeWemos(request, socket, head) {
       return;
     }
 
-    const data = await resp.json();
+    const raw = await resp.text();
+    console.log("RAW PHP RESPONSE:", raw);
+    const data = JSON.parse(raw);
     if (data.success !== true) {
       try { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); } catch (e) {}
       console.log(`Authenticating Wemos.Failed due to bad crdentials`,data.message);
